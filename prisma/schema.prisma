@@ -1,0 +1,70 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+
+model User {
+  id                Int           @id @default(autoincrement())
+  githubId          Int           @unique
+  address           String        @unique
+  createdTasks      Task[]        @relation("CreatedTasks")
+  completedTasks    Task[]        @relation("CompletedTasks")
+  payouts           Payouts[]
+  totalRedeemed     Int           @default(0)
+}
+
+model Task {
+  id              Int      @id @default(autoincrement())
+  title           String?  @default("Pick the most clickable thumbnail")
+  completedBy     Int?     // GitHub ID of the user who completed the task
+  description     String
+  url             String
+  done            Boolean  @default(false)
+  repo            String
+  issueId         Int
+  creatorId       Int
+  payment_sig     String
+  amount          Int
+  expiry          DateTime?   // Nullable DateTime field for expiry
+
+  user            User     @relation("CreatedTasks", fields: [creatorId], references: [githubId])
+  completer       User?    @relation("CompletedTasks", fields: [completedBy], references: [githubId])
+
+  @@unique([repo, issueId])
+}
+
+
+model Github {
+  id                        Int             @id @default(autoincrement())
+  user_github_id            Int             @unique
+  token                     String          @unique
+  refresh_token             String          @unique
+  expires_in                DateTime            
+  refresh_token_expires_in  DateTime            
+}
+
+model Payouts {
+  id        Int      @id @default(autoincrement())
+  user_id   Int 
+  user      User     @relation(fields: [user_id], references: [id])
+  amount    Int
+  signature String
+  status    TxnStatus
+}
+
+enum TxnStatus {
+  Processing
+  Complete
+  Failure
+}
