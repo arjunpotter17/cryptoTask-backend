@@ -1,6 +1,6 @@
 import axios from "axios";
 import { PrismaClient } from "@prisma/client";
-const prisma = new PrismaClient();
+
 export const getGithubUserData = async (token: string) => {
   try {
     const result = await axios.get("https://api.github.com/user", {
@@ -21,7 +21,7 @@ export const createLabel = async (repo: string, token: string) => {
       `https://api.github.com/repos/${repo}/labels`,
       {
         name: "cryptoTask",
-        color: "FFA500", // Orange color in hex
+        color: "ffa500", // Orange color in hex
       },
       {
         headers: {

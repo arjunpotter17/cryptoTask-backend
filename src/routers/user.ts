@@ -19,7 +19,7 @@ const upload = multer();
 
 //route for github app installation
 router.get("/app-installation", async (req, res) => {
-  const { code, installation_id, setup_action } = req.query;
+  const { code } = req.query;
   const token = req.headers["authorization"];
   const client_id = process.env.APP_ID;
   const client_secret = process.env.APP_SECRET;
@@ -97,15 +97,18 @@ router.get("/app-installation-status", async (req, res) => {
     res.status(200).json({ status: "done" });
   } catch (error) {
     console.error("Error fetching app installation status:", error);
-    res.status(500).json({ status: "pending" });
+    res.status(500).json({ status: "error" });
   }
 });
 
 //route to get the github auth token from code
 router.post("/githubAuthToken", async (req, res) => {
   const code = req.query.code;
+
   const client_id = process.env.AUTH_CLIENT_ID;
   const client_secret = process.env.AUTH_CLIENT_SECRET;
+
+  console.log(client_id, client_secret, "id secret")
   const params =
     "?client_id=" +
     client_id +
@@ -133,7 +136,7 @@ router.post("/githubAuthToken", async (req, res) => {
     const user = await prisma.user.upsert({
       where: { githubId },
       update: {},
-      create: { githubId, address: "" },
+      create: { githubId},
     });
 
     res.status(200).send({
@@ -188,6 +191,39 @@ router.post("/github-repos", githubAppMiddleWare, async (req, res) => {
   }
 });
 
+//get task details for withdraw and close
+router.get('/task/withdraw/:id', async (req, res) => {
+  const taskId = parseInt(req.params.id);
+
+  try {
+    const task = await prisma.task.findUnique({
+      where: { id: taskId },
+      select: {
+        amount: true,
+        escrow_seed: true,
+        maker_key: true,
+        task_key: true,
+      },
+    });
+
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Convert BigInt to string
+    const taskWithStringifiedBigInt = {
+      ...task,
+      amount: task.amount.toString(),
+    };
+
+    res.json(taskWithStringifiedBigInt);
+  } catch (error) {
+    console.error('Error retrieving task:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
 //receive the webhook from github
 router.post("/webhooks/github", verifyGitHubSignature, async (req, res) => {
   const event = req.headers["x-github-event"];
@@ -219,11 +255,11 @@ router.post("/webhooks/github", verifyGitHubSignature, async (req, res) => {
         });
 
         if (task) {
-          const mergedBy = pullRequest.merged_by.id; // GitHub ID of the person who merged the PR
+          const createdBy = pullRequest.user.id; // GitHub ID of the person who created the PR
 
-          // Check if the user who merged the PR is a user on the platform
+          // Check if the user who created the PR is a user on the platform
           const user = await prisma.user.findUnique({
-            where: { githubId: mergedBy },
+            where: { githubId: createdBy },
           });
 
           if (user) {
@@ -240,7 +276,7 @@ router.post("/webhooks/github", verifyGitHubSignature, async (req, res) => {
             await prisma.user.update({
               where: { id: user.id },
               data: {
-                totalRedeemed: {
+                unredeemedAmount: {
                   increment: task.amount,
                 },
               },
@@ -257,6 +293,7 @@ router.post("/webhooks/github", verifyGitHubSignature, async (req, res) => {
 
   res.status(200).send("Webhook received");
 });
+
 
 //route to get the user profile data
 router.get("/profile", githubMiddleware, async (req, res) => {
@@ -276,20 +313,132 @@ router.get("/profile", githubMiddleware, async (req, res) => {
     //@ts-ignore
     const githubData = req.user;
 
-    const totalRedeemed =
-      user?.payouts.reduce((sum, payout) => sum + payout.amount, 0) || 0;
+    const totalRedeemed = user?.payouts.reduce((sum, payout) => sum + Number(payout.amount), 0) || 0;
 
-    res.json({
+    const userWithStringifiedBigInt = {
       name: githubData.name,
+      profileUsername: githubData.githubUsername,
       email: githubData.email,
       avatarUrl: githubData.avatar_url,
-      createdTasks: user?.createdTasks,
-      completedTasks: user?.completedTasks,
-      totalRedeemed: totalRedeemed,
-    });
+      createdTasks: user?.createdTasks.map(task => ({
+        ...task,
+        amount: task.amount.toString()
+      })),
+      completedTasks: user?.completedTasks.map(task => ({
+        ...task,
+        amount: task.amount.toString()
+      })),
+      totalRedeemed: totalRedeemed.toString(),
+      unredeemedAmount: user?.unredeemedAmount.toString(),
+    };
+
+    res.json(userWithStringifiedBigInt);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Error fetching profile data" });
+  }
+});
+
+
+//route for existing issues modification
+router.post("/add-label-fetch-issue", githubAppMiddleWare, async (req, res) => {
+  const { repo, issueUrl, amount, escrowSeed, depositId, initId, key } = req.body;
+  const auth_token = req.headers["app_authorization"] as string;
+  const token = auth_token?.replace("Bearer", "").trim();
+  const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+  try {
+      const issueNumber = issueUrl.split('/').pop();
+
+      // Create cryptoTask label
+      createLabel(repo, token);
+
+      // Add label to the issue
+      await axios.post(
+          `https://api.github.com/repos/${repo}/issues/${issueNumber}/labels`,
+          { labels: ["cryptoTask"] },
+          {
+              headers: {
+                  Authorization: `token ${token}`,
+                  Accept: "application/vnd.github.v3+json",
+              },
+          }
+      );
+
+      // Fetch issue details
+      const issueResponse = await axios.get(
+          `https://api.github.com/repos/${repo}/issues/${issueNumber}`,
+          {
+              headers: {
+                  Authorization: `token ${token}`,
+                  Accept: "application/vnd.github.v3+json",
+              },
+          }
+      );
+
+      const issueData = issueResponse.data;
+
+      // Create task in the database
+      const data = await getGithubUserData(token);
+      const task = await prisma.task.create({
+          data: {
+              title: issueData.title,
+              description: issueData.body,
+              creatorId: data.id,
+              url: issueData.html_url,
+              repo: repo,
+              issueId: issueData.number,
+              amount: amount, // Adjust as needed if amount needs to be set
+              payment_sig: initId, // Adjust as needed
+              escrow_seed: escrowSeed, // Adjust as needed
+              maker_key: depositId, // Adjust as needed
+              task_key: key, // Adjust as needed
+          },
+      });
+
+      if (!task) {
+          return res.status(500).json({
+              message: "Error creating task on db",
+          });
+      }
+
+      // Check if webhook already exists
+      const hooksResponse = await axios.get(`https://api.github.com/repos/${repo}/hooks`, {
+          headers: {
+              Authorization: `token ${token}`,
+              Accept: "application/vnd.github.v3+json",
+          },
+      });
+
+      const existingHook = hooksResponse.data.find((hook:any) => hook.config.url === "https://9a09-2401-4900-1cc5-dbc0-6672-275d-de82-87f6.ngrok-free.app/v1/user/webhooks/github");
+
+      if (!existingHook) {
+          await axios.post(`https://api.github.com/repos/${repo}/hooks`, {
+              name: "web",
+              active: true,
+              events: ["pull_request"],
+              config: {
+                  url: "https://9a09-2401-4900-1cc5-dbc0-6672-275d-de82-87f6.ngrok-free.app/v1/user/webhooks/github",
+                  content_type: "json",
+                  secret: WEBHOOK_SECRET,
+              },
+          }, {
+              headers: {
+                  Authorization: `token ${token}`,
+                  Accept: "application/vnd.github.v3+json",
+              },
+          });
+      }
+
+      res.status(200).json({
+          message: "Label added, issue details fetched, and task created successfully",
+          issueUrl: issueData.html_url,
+      });
+  } catch (error:any) {
+      console.error("Error adding label, fetching issue details, or creating task:", error);
+      res.status(500).json({
+          message: "Error adding label, fetching issue details, or creating task",
+          error: error.response ? error.response.data : error.message,
+      });
   }
 });
 
@@ -299,7 +448,7 @@ router.post(
   githubAppMiddleWare,
   upload.single("image"),
   async (req, res) => {
-    const { title, description, repo, amount, expiry } = req.body;
+    const { title, description, repo, amount, escrowSeed, depositId, initId, key } = req.body;
     const auth_token = req.headers["app_authorization"] as string;
     const token = auth_token?.replace("Bearer", "").trim();
     const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
@@ -307,14 +456,9 @@ router.post(
     const data = await getGithubUserData(token as string);
 
     // Add image to the description if uploaded
-    let descriptionWithImage = `**This is a cryptoTask bounty issue, before creating a Pull request please create an account on cryptoTask to claim the bounty.** \n **Referencing the issue in the PR body or title is mandatory to avail bounty.**. \n\n\n\nIssue Description: \n\n${description}`;
-    if (req.file) {
-      const image = req.file;
-      const imageUrl = `data:${image.mimetype};base64,${image.buffer.toString(
-        "base64"
-      )}`;
-      descriptionWithImage += `\n\n![Image](${imageUrl})`;
-    }
+    let descriptionWithImage = `**This is a cryptoTask bounty issue, before creating a Pull request please create an account on cryptoTask to claim the bounty.** \n **Referencing the issue in the PR body is mandatory to avail bounty.**. \n\n\n\nIssue Description: \n${description}`;
+    
+    let issueNumber;
 
     try {
       // Check if issues are enabled
@@ -362,6 +506,8 @@ router.post(
         }
       );
 
+      issueNumber = response.data.number;
+
       const task = await prisma.task.create({
         data: {
           title,
@@ -369,25 +515,24 @@ router.post(
           creatorId: data?.id,
           url: response.data.html_url,
           repo: repo,
-          issueId: response.data.number,
+          issueId: issueNumber,
           amount: parseFloat(amount) * TOTAL_DECIMALS, // Adjust as needed
-          payment_sig: "", // Adjust as needed
-          expiry: expiry, // Add the expiry field here
+          payment_sig: initId, // Adjust as needed
+          escrow_seed: escrowSeed, // Adjust as needed
+          maker_key: depositId, // Adjust as needed
+          task_key: key,
         },
       });
 
-      await axios.post(
+      if (!task) {
+        return res.status(500).json({
+          message: "Error creating task on db",
+        });
+      }
+
+      // Check if webhook already exists
+      const hooksResponse = await axios.get(
         `https://api.github.com/repos/${repo}/hooks`,
-        {
-          name: "web",
-          active: true,
-          events: ["pull_request"],
-          config: {
-            url: "https://a589-2401-4900-1cc4-54b3-69c3-4b10-3344-4ace.ngrok-free.app/v1/user/webhooks/github",
-            content_type: "json",
-            secret: WEBHOOK_SECRET,
-          },
-        },
         {
           headers: {
             Authorization: `token ${token}`,
@@ -396,12 +541,52 @@ router.post(
         }
       );
 
+      const existingHook = hooksResponse.data.find((hook: any) =>
+        hook.config.url === "https://9a09-2401-4900-1cc5-dbc0-6672-275d-de82-87f6.ngrok-free.app/v1/user/webhooks/github"
+      );
+
+      if (!existingHook) {
+        await axios.post(
+          `https://api.github.com/repos/${repo}/hooks`,
+          {
+            name: "web",
+            active: true,
+            events: ["pull_request"],
+            config: {
+              url: "https://9a09-2401-4900-1cc5-dbc0-6672-275d-de82-87f6.ngrok-free.app/v1/user/webhooks/github",
+              content_type: "json",
+              secret: WEBHOOK_SECRET,
+            },
+          },
+          {
+            headers: {
+              Authorization: `token ${token}`,
+              Accept: "application/vnd.github.v3+json",
+            },
+          }
+        );
+      }
+
       res.status(200).json({
         message: "Issue and task created successfully",
         issueUrl: response.data?.html_url,
       });
     } catch (error: any) {
       console.error("Error creating issue or task:", error);
+
+      if (issueNumber) {
+        // Delete the created issue if webhook setup failed
+        await axios.delete(
+          `https://api.github.com/repos/${repo}/issues/${issueNumber}`,
+          {
+            headers: {
+              Authorization: `token ${token}`,
+              Accept: "application/vnd.github.v3+json",
+            },
+          }
+        );
+      }
+
       res.status(500).json({
         message: "Error creating issue or task",
         error: error.response ? error.response.data : error.message,
@@ -427,16 +612,45 @@ router.get("/github-userData", async (req, res) => {
 //route to get all the tasks
 router.get("/tasks", async (req, res) => {
   try {
-    const tasks = await prisma.task.findMany();
+      const tasks = await prisma.task.findMany();
+      const tasksWithStringifiedBigInt = tasks.map(task => ({
+          ...task,
+          amount: task.amount.toString(),
+      }));
+      res.status(200).json(tasksWithStringifiedBigInt);
+  } catch (error:any) {
+      console.error("Error retrieving tasks:", error);
+      res.status(500).json({
+          message: "Error retrieving tasks",
+          error: error.message,
+      });
+  }
+});
 
-    res.status(200).json(tasks);
-  } catch (error: any) {
-    console.error("Error retrieving tasks:", error);
-    res.status(500).json({
-      message: "Error retrieving tasks",
-      error: error.message,
+
+router.delete('/tasks/:id', async (req, res) => {
+  const taskId = parseInt(req.params.id);
+
+  try {
+    const task = await prisma.task.findUnique({
+      where: { id: taskId },
     });
+
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    await prisma.task.delete({
+      where: { id: taskId },
+    });
+
+    res.status(200).json({ message: 'Task deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting task:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 export default router;
+
+

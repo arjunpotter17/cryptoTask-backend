@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "User" ALTER COLUMN "totalRedeemed" SET DATA TYPE BIGINT,
+ALTER COLUMN "unredeemedAmount" SET DATA TYPE BIGINT;

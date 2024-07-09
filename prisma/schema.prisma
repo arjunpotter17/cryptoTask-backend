@@ -16,12 +16,12 @@ datasource db {
 
 model User {
   id                Int           @id @default(autoincrement())
-  githubId          Int           @unique
-  address           String        @unique
+  githubId          Int           @unique      
   createdTasks      Task[]        @relation("CreatedTasks")
   completedTasks    Task[]        @relation("CompletedTasks")
   payouts           Payouts[]
-  totalRedeemed     Int           @default(0)
+  totalRedeemed     BigInt           @default(0)
+  unredeemedAmount  BigInt           @default(0)
 }
 
 model Task {
@@ -35,9 +35,10 @@ model Task {
   issueId         Int
   creatorId       Int
   payment_sig     String
-  amount          Int
-  expiry          DateTime?   // Nullable DateTime field for expiry
-
+  amount          BigInt
+  escrow_seed     String   @default("")
+  maker_key       String   @default("")
+  task_key        String   @default("") 
   user            User     @relation("CreatedTasks", fields: [creatorId], references: [githubId])
   completer       User?    @relation("CompletedTasks", fields: [completedBy], references: [githubId])
 

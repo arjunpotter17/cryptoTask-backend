@@ -1,5 +1,3 @@
-import jwt from "jsonwebtoken";
-import { JWT_SECRET } from "./config";
 import { NextFunction, Request, Response } from "express";
 import crypto from "crypto";
 import { PrismaClient } from "@prisma/client";
@@ -10,26 +8,6 @@ const prisma = new PrismaClient();
 const client_id = process.env.APP_ID;
 const client_secret = process.env.APP_SECRET;
 
-// export function authMiddleware(
-//   req: Request,
-//   res: Response,
-//   next: NextFunction
-// ) {
-//   const token = req.headers["authorization"];
-//   const decoded = jwt.verify(token as string, JWT_SECRET);
-//   try {
-//     // @ts-ignore
-//     if (decoded.userId) {
-//       // @ts-ignore
-//       req.userId = decoded.userId;
-//       return next();
-//     } else {
-//       res.status(403).json({ error: "Not logged in" });
-//     }
-//   } catch {
-//     res.status(403).json({ error: "Unauthorized Token" });
-//   }
-// }
 
 export function verifyGitHubSignature(
   req: Request,
